@@ -1,0 +1,185 @@
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.net.HttpURLConnection;
+import java.net.URI;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
+import java.util.Base64;
+import java.util.Scanner;
+
+import javax.crypto.Cipher;
+import javax.crypto.spec.IvParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
+
+public class GerenciadorDeSenhas {
+
+    // ✅ Chave fixa para AES (não recomendado para produção, apenas para fins didáticos)
+    private static final String CHAVE_AES = "1234567890123456";
+    private static final String ARQUIVO_SENHAS = "senhas.txt";
+
+    public static void main(String[] args) {
+        Scanner scanner = new Scanner(System.in);
+        System.out.println("🔐 Bem-vindo ao Gerenciador de Senhas 🔐");
+
+        // ✅ 1. Autenticação 2FA simples
+        if (!autenticar2FA(scanner)) {
+            System.out.println("🚫 Autenticação de dois fatores falhou.");
+            scanner.close();
+            return;
+        }
+
+        System.out.print("Digite o nome do serviço: ");
+        String servico = scanner.nextLine();
+
+        String senha;
+
+        // ✅ 2. Loop até que a senha seja segura (não tenha vazado)
+        while (true) {
+            senha = obterSenha(scanner);
+
+            System.out.println("🔍 Verificando se a senha foi exposta...");
+
+            if (senhaEstaSegura(senha)) {
+                System.out.println("✅ Senha segura.");
+                break;
+            } else {
+                System.out.println("⚠️ Esta senha já foi vazada, favor escolher outra.\n");
+            }
+        }
+
+        try {
+            // ✅ 3. Criptografar e salvar senha
+            String senhaCriptografada = criptografarAES(senha, CHAVE_AES);
+            salvarSenha(servico, senhaCriptografada);
+            System.out.println("🗄️ Senha armazenada com sucesso para o serviço: " + servico);
+        } catch (Exception e) {
+            System.out.println("❌ Erro ao criptografar ou salvar a senha: " + e.getMessage());
+        }
+
+        scanner.close(); // ✅ Fechar o scanner
+    }
+
+    // ✅ Recebe a senha enviada pelo usuário ou gera automaticamente
+    private static String obterSenha(Scanner scanner) {
+        System.out.print("Deseja gerar uma senha segura automaticamente? (sim ou não): ");
+        String opcao = scanner.nextLine();
+
+        if (opcao.equalsIgnoreCase("sim")) {
+            String senhaGerada = gerarSenhaSegura(12);
+            System.out.println("Senha gerada: " + senhaGerada);
+            return senhaGerada;
+        } else {
+            System.out.print("Digite a senha desejada: ");
+            return scanner.nextLine();
+        }
+    }
+
+    // ✅ Verifica se a senha é segura
+    private static boolean senhaEstaSegura(String senha) {
+        try {
+            return !verificarVazamento(senha);
+        } catch (IOException e) {
+            System.out.println("⚠️ Erro ao verificar vazamento: " + e.getMessage());
+        } catch (Exception e) {
+            System.out.println("❌ Erro inesperado: " + e.getMessage());
+        }
+        return false; // ❗Em caso de erro, considera-se que a senha não é segura
+    }
+
+    /**
+     * ✅ Gera uma senha aleatória segura com o tamanho especificado.
+     */
+    public static String gerarSenhaSegura(int tamanho) {
+        String caracteres = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        SecureRandom random = new SecureRandom();
+        StringBuilder senha = new StringBuilder();
+        for (int i = 0; i < tamanho; i++) {
+            int index = random.nextInt(caracteres.length());
+            senha.append(caracteres.charAt(index));
+        }
+        return senha.toString();
+    }
+
+    /**
+     * ✅ Realiza uma autenticação simples de dois fatores.
+     */
+    public static boolean autenticar2FA(Scanner scanner) {
+        System.out.print("Digite o código 2FA (123456 para teste): ");
+        String codigo = scanner.nextLine();
+        return codigo.equals("123456");
+    }
+
+    /**
+     * ✅ Verifica se a senha foi exposta usando a API Pwned Passwords (K-Anonymity).
+     */
+    public static boolean verificarVazamento(String senha) throws Exception {
+        // Gera o hash SHA-1 da senha
+        MessageDigest sha1 = MessageDigest.getInstance("SHA-1");
+        byte[] hashBytes = sha1.digest(senha.getBytes(StandardCharsets.UTF_8));
+
+        StringBuilder sb = new StringBuilder();
+        for (byte b : hashBytes) {
+            sb.append(String.format("%02X", b));
+        }
+        String hashSenha = sb.toString();
+
+        // Usa os primeiros 5 caracteres para a consulta (K-Anonymity)
+        String prefixo = hashSenha.substring(0, 5);
+        String sufixo = hashSenha.substring(5);
+
+        String apiUrl = "https://api.pwnedpasswords.com/range/" + prefixo;
+
+        URI uri = URI.create(apiUrl);
+        HttpURLConnection conn = (HttpURLConnection) uri.toURL().openConnection();
+        conn.setRequestMethod("GET");
+        conn.setRequestProperty("User-Agent", "Java Password Checker");
+
+        // ✅ Verifica se a resposta HTTP é 200
+        int responseCode = conn.getResponseCode();
+        if (responseCode != 200) {
+            throw new IOException("Erro ao conectar: código " + responseCode);
+        }
+
+        // ✅ Lê a resposta da API
+        try (BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream()))) {
+            String linha;
+            while ((linha = in.readLine()) != null) {
+                String[] partes = linha.split(":");
+                if (partes[0].equalsIgnoreCase(sufixo)) {
+                    return true; // ✅ Senha encontrada na base de dados vazados
+                }
+            }
+        }
+        return false; // ✅ Senha não encontrada
+    }
+
+    /**
+     * ✅ Criptografa um texto usando AES com modo CBC e PKCS5Padding.
+     * Para segurança: usa IV fixo para exemplo, mas idealmente deve ser aleatório.
+     */
+    public static String criptografarAES(String texto, String chave) throws Exception {
+        SecretKeySpec key = new SecretKeySpec(chave.getBytes(StandardCharsets.UTF_8), "AES");
+
+        // ✅ Para segurança real, gere IV aleatório.
+        IvParameterSpec iv = new IvParameterSpec(new byte[16]); // IV fixo, para exemplo
+
+        Cipher cipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
+        cipher.init(Cipher.ENCRYPT_MODE, key, iv);
+
+        byte[] encrypted = cipher.doFinal(texto.getBytes(StandardCharsets.UTF_8));
+        return Base64.getEncoder().encodeToString(encrypted);
+    }
+
+    /**
+     * ✅ Salva a senha criptografada em um arquivo, junto com o nome do serviço.
+     */
+    public static void salvarSenha(String servico, String senhaCriptografada) throws IOException {
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(ARQUIVO_SENHAS, true))) {
+            writer.write(servico + ";" + senhaCriptografada + "\n");
+        }
+    }
+}
